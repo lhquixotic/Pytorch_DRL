@@ -1,0 +1,6 @@
+numpy
+matplotlib
+PyVirtualDisplay
+gym
+nn_builder
+tensorflow

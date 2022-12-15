@@ -1,4 +1,9 @@
 import gym
+import sys
+from os.path import dirname, abspath
+
+sys.path.append(dirname(dirname(abspath(__file__))))
+
 from agents.Trainer import Trainer
 from agents.actor_critic_agents.DDPG import DDPG
 from agents.hierarchical_agents.HIRO import HIRO
@@ -136,7 +141,8 @@ config.hyperparameters = {
 
 
 if __name__ == "__main__":
-    AGENTS = [DDPG, HIRO]
+    # AGENTS = [DDPG, HIRO]
+    AGENTS = [DDPG]
     trainer = Trainer(config, AGENTS)
     trainer.run_games_for_agents()
 

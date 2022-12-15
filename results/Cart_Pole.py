@@ -21,7 +21,7 @@ from agents.AIf_agents.AIf import AIf
 
 config = Config()
 config.seed = 1
-config.environment = gym.make("CartPole-v0")
+config.environment = gym.make("CartPole-v1")
 config.num_episodes_to_run = 450
 config.file_to_save_data_results = "results/data_and_graphs/Cart_Pole_Results_Data.pkl"
 config.file_to_save_results_graph = "results/data_and_graphs/Cart_Pole_Results_Graph.png"
@@ -30,7 +30,7 @@ config.visualise_individual_results = False
 config.visualise_overall_agent_results = True
 config.standard_deviation_results = 1.0
 config.runs_per_agent = 5
-config.use_GPU = True
+config.use_GPU = False
 config.overwrite_existing_results_file = False
 config.randomise_random_seed = True
 config.save_model = False
@@ -151,13 +151,8 @@ config.hyperparameters = {
 if __name__ == "__main__":
     # AGENTS = [SAC_Discrete, DDQN, Dueling_DDQN, DQN, DQN_With_Fixed_Q_Targets,
     #           DDQN_With_Prioritised_Experience_Replay, A2C, PPO, A3C ]
-    AGENTS = [AIf]
+    # AGENTS = [SAC_Discrete,DQN,DDQN,AIf,Dueling_DDQN]
+    AGENTS = [A3C,PPO]
     trainer = Trainer(config, AGENTS)
     trainer.run_games_for_agents()
     # trainer.visualise_preexisting_results()
-
-
-
-
-
-

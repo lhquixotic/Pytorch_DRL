@@ -6,6 +6,7 @@ from turtle import forward
 
 import torch
 import random
+from torch.distributions import Normal
 import torch.optim as optim 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,43 +16,18 @@ from agents.Base_Agent import Base_Agent
 from exploration_strategies.Epsilon_Greedy_Exploration import Epsilon_Greedy_Exploration
 from utilities.data_structures.Replay_Buffer import Replay_Buffer
 from utilities.data_structures.Torch_Replay_Buffer import Torch_Replay_Buffer
+from agents.AIf_agents.AIf import AIf
 
+TRAINING_EPISODES_PER_EVAL_EPISODE = 10
 
-'''
-config.hyperparameters = {
-    "AIf_Agents": {
-        "batch_size": 256,
-        "buffer_size": 40000,
-        "tra_lr": 0.001,
-        "pol_lr": 0.001,
-        "val_lr": 0.001,
-        "gamma" : 1.00,
-        "update_every_n_steps": 5,
-
-        "epsilon": 0.98,
-        "epsilon_decay_rate_denominator": 1,
-        "discount_rate": 1,
-        "tau": 0.01,
-        "alpha_prioritised_replay": 0.6,
-        "beta_prioritised_replay": 0.1,
-        "incremental_td_error": 1e-8,
-        
-        "linear_hidden_units": [30, 15],
-        "final_layer_activation": "None",
-        "batch_norm": False,
-        "gradient_clipping_norm": 0.7,
-        "learning_iterations": 1,
-        "clip_rewards": False
-    }
-}
-'''
-
-class AIf(Base_Agent):
+class AIf_Continuous(AIf):
     """ An active inference agent """
     agent_name = "AIf"
     def __init__(self, config):
         Base_Agent.__init__(self,config)
-        
+
+        assert self.action_types == "CONTINUOUS", "Action types should not be discrete."
+
         # Initialize the env params
         self.observation_shape = self.environment.observation_space.shape
         self.observation_size = int(np.prod(self.observation_shape))
@@ -67,10 +43,12 @@ class AIf(Base_Agent):
         self.transition_network = self.create_forward_NN(self.observation_size+1, self.observation_size, [64])
         self.transition_optimizer = optim.Adam(self.transition_network.parameters(),
                                                 lr = self.hyperparameters["tra_lr"])
-        policy_params = {"final_layer_activation":"SOFTMAX"}       
-        self.policy_network = self.create_forward_NN(self.observation_size,self.action_size,[64],hyperparameters=policy_params)
-        self.policy_optimizer = optim.Adam(self.policy_network.parameters(),
+
+        actor_params = {"final_layer_activation":"TANH"}       
+        self.actor_network = self.create_forward_NN(self.observation_size,self.action_size*2,[64],hyperparameters=actor_params)
+        self.actor_optimizer = optim.Adam(self.actor_network.parameters(),
                                                 lr = self.hyperparameters["pol_lr"])
+
         self.value_network = self.create_forward_NN(self.observation_size, self.action_size,[64])
         self.value_optimizer = optim.Adam(self.value_network.parameters(),
                                                 lr = self.hyperparameters["val_lr"])
@@ -79,7 +57,7 @@ class AIf(Base_Agent):
         self.target_network.load_state_dict(self.value_network.state_dict())
 
         self.logger.info("Transition network {}.".format(self.transition_network))
-        self.logger.info("Policy network {}.".format(self.policy_network))
+        self.logger.info("Actor network {}.".format(self.actor_network))
         self.logger.info("Value network {}.".format(self.value_network))
 
         self.gamma = self.hyperparameters["gamma"]
@@ -95,16 +73,15 @@ class AIf(Base_Agent):
     def reset_game(self):
         super(AIf,self).reset_game()
         self.update_learning_rate(self.hyperparameters["tra_lr"],self.transition_optimizer)
-        self.update_learning_rate(self.hyperparameters["pol_lr"],self.policy_optimizer)
+        self.update_learning_rate(self.hyperparameters["pol_lr"],self.actor_optimizer)
         self.update_learning_rate(self.hyperparameters["val_lr"],self.value_optimizer)
     
 
     def step(self):
+        eval_ep = self.episode_number % TRAINING_EPISODES_PER_EVAL_EPISODE == 0
+        
         while not self.done:
-            if self.config.use_GPU:
-                self.action = int(self.pick_action().flatten().cpu().numpy())
-            else:
-                self.action = int(self.pick_action().flatten().numpy())
+            self.action = self.pick_action(eval_ep)
             self.conduct_action(self.action)
             self.learn()
             self.save_experience()
@@ -112,18 +89,49 @@ class AIf(Base_Agent):
             self.global_step_number += 1
         self.episode_number += 1
             
-    def pick_action(self,state=None):
+    def pick_action(self, eval_ep, state=None):
         if state is None: state = self.state
         if isinstance(state,np.int64) or isinstance(state, int): state = np.array([state])
         state = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
         if len(state.shape) < 2: state = state.unsqueeze(0)
-        # action selection
-        with torch.no_grad():
-            policy = self.policy_network(state)
-        action = torch.multinomial(policy,1)
-        self.logger.info("Action chosen {} -- policy network score {}.".format(action,policy))
+
+        if eval_ep: action = self.actor_pick_action(state=state,eval=True)
+        elif self.global_step_number < self.hyperparameters["min_steps_before_learning"]:
+            action = self.environment.action_space.sample()
+            print("Picking randonm action: ",action)
+        else: action = self.actor_pick_action(state=state)
+        if self.add_extra_noise:
+            action += self.noise.sample()
         return action
+    
+    def actor_pick_action(self, state=None, eval=False):
+        """Uses actor to pick an action in one of two ways: 1) If eval = False and we aren't in eval mode then it picks
+        an action that has partly been randomly sampled 2) If eval = True then we pick the action that comes directly
+        from the network and so did not involve any random sampling"""
+        if state is None: state = self.state
+        state = torch.FloatTensor([state]).to(self.device)
+        if len(state.shape) == 1: state = state.unsqueeze(0)
+        if eval == False: action, _, _ = self.produce_action_and_action_info(state)
+        else:
+            with torch.no_grad():
+                _, z, action = self.produce_action_and_action_info(state)
+        action = action.detach().cpu().numpy()
+        return action[0]
         
+    def produce_action_and_action_info(self, state):
+        """Given the state, produces an action, the log probability of the action, and the tanh of the mean action"""
+        actor_output = self.actor_network(state)
+        mean, log_std = actor_output[:, :self.action_size], actor_output[:, self.action_size:]
+        std = log_std.exp()
+        normal = Normal(mean, std)
+        x_t = normal.rsample()  #rsample means it is sampled using reparameterisation trick
+        action = torch.tanh(x_t)
+        log_prob = normal.log_prob(x_t)
+        log_prob -= torch.log(1 - action.pow(2) + 1e-6)
+        log_prob = log_prob.sum(1, keepdim=True)
+        return action, log_prob, torch.tanh(mean)
+
+
     def learn(self, experiences=None):
         """ Run a learning iteration for the network """
         
@@ -151,7 +159,7 @@ class AIf(Base_Agent):
 
         # Reset the gradients:
         self.transition_optimizer.zero_grad()
-        self.policy_optimizer.zero_grad()
+        self.actor_optimizer.zero_grad()
         self.value_optimizer.zero_grad()
 
         # Compute the gradients:
@@ -161,7 +169,7 @@ class AIf(Base_Agent):
         self.log_gradient_and_weight_information(self.value_network,self.value_optimizer)
         # Perform gradient descent:
         self.transition_optimizer.step()
-        self.policy_optimizer.step()
+        self.actor_optimizer.step()
         self.value_optimizer.step()
 
     def compute_value_net_loss(self, obs_batch_t1, obs_batch_t2,
@@ -170,7 +178,7 @@ class AIf(Base_Agent):
         
         with torch.no_grad():
             # Determine the action distribution for time t2:
-            policy_batch_t2 = self.policy_network(obs_batch_t2)
+            policy_batch_t2,_,_  = self.produce_action_and_action_info(obs_batch_t2)
             
             # Determine the target EFEs for time t2:
             target_EFEs_batch_t2 = self.target_network(obs_batch_t2)
@@ -196,7 +204,7 @@ class AIf(Base_Agent):
     def compute_VFE(self, obs_batch_t1, pred_error_batch_t0t1):
         
         # Determine the action distribution for time t1:
-        policy_batch_t1 = self.policy_network(obs_batch_t1)
+        policy_batch_t1,_,_ = self.produce_action_and_action_info(obs_batch_t1)
         
         # Determine the EFEs for time t1:
         EFEs_batch_t1 = self.value_network(obs_batch_t1).detach()
@@ -256,44 +264,11 @@ class AIf(Base_Agent):
             if end_indices[i] in range(self.memory.position(), self.memory.position()+ self.max_n_indices):
                 end_indices[i] += self.max_n_indices
 
-        ''' Use deque Replay Buffer 
-        # memory_list = list(self.memory.memory)
-        # print("memory list:{}".format(memory_list))
-        # print("index:{},{}".format(start_index,end_index))
-        # experiences = memory_list
-
-        # observations = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).to(self.device)
-        # actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).to(self.device)
-        # actions = actions.squeeze(-1)
-        # rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).to(self.device)
-        # rewards = rewards.squeeze(-1)
-        # next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).to(self.device)
-        # dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None])).to(self.device)
-        # dones = dones.squeeze(-1)
-
-        # observations,actions,rewards,next_observations, dones = self.memory.sample(self.memory.batch_size+self.max_n_indices*2)
-        # print("shape of all obs batch: {}".format(observations.shape))
-        # print("shape:{},{},{},{}".format(observations.shape,actions.shape,rewards.shape,dones.shape))
-
-        # end_indices = [ i for i in range(len(observations)-self.memory.batch_size,len(observations))]
-        # end_indices = np.array(end_indices)
-
-        # Retrieve the specified indices that come before the end_indices
-        '''
-
         """ Use torch Replay Buffer """
-
-
-
         obs_batch = self.memory.observations[np.array([index-self.obs_indices for index in end_indices])]
         action_batch = self.memory.actions[np.array([index-self.action_indices for index in end_indices])]
         reward_batch = self.memory.rewards[np.array([index-self.reward_indices for index in end_indices])]
         done_batch = self.memory.dones[np.array([index-self.done_indices for index in end_indices])]
-
-        # print("\nllobs shape : {}, action shape: {}".format(obs_batch.shape,action_batch.shape))
-
-
-        # print("\nshape:{},{},{},{}".format(obs_batch.shape,action_batch.shape,reward_batch.shape,done_batch.shape))
 
         # Correct for sampling over multiple episodes
         for i in range(len(end_indices)):

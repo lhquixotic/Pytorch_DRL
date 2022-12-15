@@ -12,7 +12,7 @@ class Trainer(object):
     def __init__(self, config, agents):
         self.config = config
         self.agents = agents
-        # self.environment_name = self.config.environment.spec.id
+        self.environment_name = self.config.environment.spec.id
         self.agent_to_agent_group = self.create_agent_to_agent_group_dictionary()
         self.agent_to_color_group = self.create_agent_to_color_dictionary()
         self.results = None

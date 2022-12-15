@@ -1,4 +1,8 @@
 import gym
+import sys
+from os.path import dirname, abspath
+
+sys.path.append(dirname(dirname(abspath(__file__))))
 
 from agents.policy_gradient_agents.PPO import PPO
 from agents.actor_critic_agents.DDPG import DDPG
@@ -6,6 +10,7 @@ from agents.actor_critic_agents.SAC import SAC
 from agents.actor_critic_agents.TD3 import TD3
 from agents.Trainer import Trainer
 from utilities.data_structures.Config import Config
+from agents.AIf_agents.AIf_Continuous import AIf_Continuous
 
 
 config = Config()
@@ -42,6 +47,19 @@ config.hyperparameters = {
             "sigma": 0.2,
             "epsilon_decay_rate_denominator": 1,
             "clip_rewards": False
+        },
+    
+    "AIf_Agents": {
+            "batch_size": 64,
+            "buffer_size": 65535,
+            "tra_lr": 0.01,
+            "pol_lr": 0.01,
+            "val_lr": 0.01,
+            "gamma": 1.0,
+            "beta": 0.99,
+            "update_every_n_steps": 25,
+            "clip_rewards": False,
+            "min_steps_before_learning": 400,
         },
 
     "Actor_Critic_Agents": {
@@ -87,7 +105,8 @@ config.hyperparameters = {
 }
 
 if __name__ == "__main__":
-    AGENTS = [TD3, DDPG, PPO]
+    # AGENTS = [TD3, DDPG, PPO]
+    AGENTS = [TD3]
     trainer = Trainer(config, AGENTS)
     trainer.run_games_for_agents()
 

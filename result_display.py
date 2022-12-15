@@ -40,4 +40,4 @@ config.save_model = False
 
 AGENTS = [AIf,DQN]
 results_plotter_trainer = Trainer(config, AGENTS)
-results_plotter_trainer.visualise_preexisting_results()
+results_plotter_trainer.visualise_preexisting_results(y_limits=[0,600])
